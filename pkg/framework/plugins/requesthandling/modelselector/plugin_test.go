@@ -77,24 +77,33 @@ func newFakeHandle(modelNames ...string) *fakeHandle {
 }
 
 // mustFactory calls ModelSelectorPluginFactory and fails the test on error.
-func mustFactory(t *testing.T, parameters json.RawMessage, handle *fakeHandle) *ModelSelectorPlugin {
+func mustFactory(t *testing.T, handle *fakeHandle) *ModelSelectorPlugin {
 	t.Helper()
-	plug, err := ModelSelectorPluginFactory(ModelSelectorPluginType, parameters, handle)
+	plug, err := ModelSelectorPluginFactory(ModelSelectorPluginType, json.RawMessage(`{}`), handle)
 	if err != nil {
 		t.Fatalf("ModelSelectorPluginFactory failed: %v", err)
 	}
 	return plug.(*ModelSelectorPlugin)
 }
 
+// mustAddPlugins calls AddPlugins and fails the test on error.
+func mustAddPlugins(t *testing.T, p *ModelSelectorPlugin, plugins ...fwkplugin.Plugin) {
+	t.Helper()
+	if err := p.AddPlugins(plugins...); err != nil {
+		t.Fatalf("AddPlugins failed: %v", err)
+	}
+}
+
 // profile returns the ModelSelectorProfile for inspection in tests.
 func profile(p *ModelSelectorPlugin) *ms.ModelSelectorProfile {
-	return p.selector.Profile()
+	return p.Profile()
 }
 
 // TestProcessRequestSelectsFromDatastoreModels checks that the selected model is one of the candidates registered in the datastore.
 func TestProcessRequestSelectsFromDatastoreModels(t *testing.T) {
 	candidates := []string{"llama-70b", "llama-8b", "mistral-7b"}
-	p := mustFactory(t, json.RawMessage(`{}`), newFakeHandle(candidates...))
+	p := mustFactory(t, newFakeHandle(candidates...))
+	mustAddPlugins(t, p, maxscore.NewMaxScorePicker())
 
 	request := requesthandling.NewInferenceRequest()
 	request.Body["model"] = "auto"
@@ -112,7 +121,8 @@ func TestProcessRequestSelectsFromDatastoreModels(t *testing.T) {
 
 // TestProcessRequestFailsWithEmptyDatastore checks that ProcessRequest returns an error when no candidate models are available.
 func TestProcessRequestFailsWithEmptyDatastore(t *testing.T) {
-	p := mustFactory(t, json.RawMessage(`{}`), newFakeHandle())
+	p := mustFactory(t, newFakeHandle())
+	mustAddPlugins(t, p, maxscore.NewMaxScorePicker())
 
 	request := requesthandling.NewInferenceRequest()
 	request.Body["model"] = "auto"
@@ -125,28 +135,18 @@ func TestProcessRequestFailsWithEmptyDatastore(t *testing.T) {
 
 // TestTypedName checks that the plugin's TypedName type matches the registered ModelSelectorPluginType constant.
 func TestTypedName(t *testing.T) {
-	thePlugin := mustFactory(t, json.RawMessage(`{}`), newFakeHandle("model-a"))
+	thePlugin := mustFactory(t, newFakeHandle("model-a"))
 	if thePlugin.TypedName().Type != ModelSelectorPluginType {
 		t.Errorf("expected type %q, got %q", ModelSelectorPluginType, thePlugin.TypedName().Type)
 	}
 }
 
-// TestFactoryUsesDefaultMaxScorePickerWhenNoPluginsConfigured checks that MaxScorePicker is used as the default when plugins list is empty.
-func TestFactoryUsesDefaultMaxScorePickerWhenNoPluginsConfigured(t *testing.T) {
-	thePlugin := mustFactory(t, json.RawMessage(`{}`), newFakeHandle("model-a"))
-	picker := profile(thePlugin).Picker()
-	if picker == nil || picker.TypedName().Type != maxscore.MaxScorePickerType {
-		t.Errorf("expected default picker type %q, got %v", maxscore.MaxScorePickerType, picker)
-	}
-}
-
-// TestFactoryWiresScorerFromParameters checks that a scorer plugin referenced in parameters is added to the profile with the given weight.
-func TestFactoryWiresScorerFromParameters(t *testing.T) {
+// TestAddPluginsWiresScorer checks that a WeightedScorer added via AddPlugins appears in the profile.
+func TestAddPluginsWiresScorer(t *testing.T) {
+	p := mustFactory(t, newFakeHandle("model-a", "model-b"))
 	scorer := costaware.NewCostScorer()
-	handle := newFakeHandle("model-a", "model-b")
-	handle.AddPlugin(scorer.TypedName().Name, scorer)
+	mustAddPlugins(t, p, ms.NewWeightedScorer(scorer, 2.0))
 
-	p := mustFactory(t, json.RawMessage(`{"plugins":[{"pluginRef":"cost-scorer","weight":2.0}]}`), handle)
 	scorers := profile(p).Scorers()
 	if len(scorers) != 1 || scorers[0].TypedName().Type != costaware.CostScorerType {
 		t.Errorf("expected one scorer of type %q, got %v", costaware.CostScorerType, scorers)
@@ -156,56 +156,36 @@ func TestFactoryWiresScorerFromParameters(t *testing.T) {
 	}
 }
 
-// TestFactoryWiresPickerFromParameters checks that a picker plugin referenced in parameters is used instead of the default.
-func TestFactoryWiresPickerFromParameters(t *testing.T) {
-	picker := maxscore.NewMaxScorePicker()
-	handle := newFakeHandle("model-a")
-	handle.AddPlugin(picker.TypedName().Name, picker)
+// TestAddPluginsWiresPicker checks that a Picker added via AddPlugins is registered in the profile.
+func TestAddPluginsWiresPicker(t *testing.T) {
+	p := mustFactory(t, newFakeHandle("model-a"))
+	mustAddPlugins(t, p, maxscore.NewMaxScorePicker())
 
-	p := mustFactory(t, json.RawMessage(`{"plugins":[{"pluginRef":"max-score-picker"}]}`), handle)
 	got := profile(p).Picker()
 	if got == nil || got.TypedName().Type != maxscore.MaxScorePickerType {
 		t.Errorf("expected picker type %q, got %v", maxscore.MaxScorePickerType, got)
 	}
 }
 
-// TestFactoryRejectsMultiplePickers checks that referencing more than one picker plugin in parameters returns an error.
-func TestFactoryRejectsMultiplePickers(t *testing.T) {
+// TestAddPluginsRejectsMultiplePickers checks that adding a second Picker returns an error.
+func TestAddPluginsRejectsMultiplePickers(t *testing.T) {
 	p1 := maxscore.NewMaxScorePicker().WithName("picker-1")
 	p2 := maxscore.NewMaxScorePicker().WithName("picker-2")
-	handle := newFakeHandle("model-a")
-	handle.AddPlugin("picker-1", p1)
-	handle.AddPlugin("picker-2", p2)
+	p := mustFactory(t, newFakeHandle("model-a"))
+	mustAddPlugins(t, p, p1)
 
-	_, err := ModelSelectorPluginFactory(ModelSelectorPluginType,
-		json.RawMessage(`{"plugins":[{"pluginRef":"picker-1"},{"pluginRef":"picker-2"}]}`),
-		handle)
-	if err == nil {
-		t.Fatal("expected error when two picker plugins are configured")
+	if err := p.AddPlugins(p2); err == nil {
+		t.Fatal("expected error when adding a second picker")
 	}
 }
 
-// TestFactoryRejectsScorerWithoutWeight checks that a scorer pluginRef without a weight returns an error.
-func TestFactoryRejectsScorerWithoutWeight(t *testing.T) {
+// TestAddPluginsRejectsScorerWithoutWeight checks that passing a raw Scorer (not wrapped in WeightedScorer) returns an error.
+func TestAddPluginsRejectsScorerWithoutWeight(t *testing.T) {
 	scorer := costaware.NewCostScorer()
-	handle := newFakeHandle("model-a")
-	handle.AddPlugin(scorer.TypedName().Name, scorer)
+	p := mustFactory(t, newFakeHandle("model-a"))
 
-	_, err := ModelSelectorPluginFactory(ModelSelectorPluginType,
-		json.RawMessage(`{"plugins":[{"pluginRef":"cost-scorer"}]}`),
-		handle)
-	if err == nil {
+	if err := p.AddPlugins(scorer); err == nil {
 		t.Fatal("expected error when scorer has no weight")
-	}
-}
-
-// TestFactoryRejectsUnknownPluginRef checks that referencing a plugin not in the handle returns an error.
-func TestFactoryRejectsUnknownPluginRef(t *testing.T) {
-	_, err := ModelSelectorPluginFactory(ModelSelectorPluginType,
-		json.RawMessage(`{"plugins":[{"pluginRef":"nonexistent-plugin"}]}`),
-		newFakeHandle("model-a"))
-	if err == nil {
-		t.Fatal("expected error for unknown pluginRef")
 	}
 }
 
@@ -227,13 +207,12 @@ func (f *fakeScorerFilter) Filter(_ context.Context, _ *fwkplugin.CycleState, _ 
 var _ modelselector.Scorer = &fakeScorerFilter{}
 var _ modelselector.Filter = &fakeScorerFilter{}
 
-// TestFactoryPluginImplementingBothScorerAndFilter checks that a plugin implementing both Scorer and Filter is registered in both roles.
-func TestFactoryPluginImplementingBothScorerAndFilter(t *testing.T) {
+// TestAddPluginsPluginImplementingBothScorerAndFilter checks that a plugin implementing both Scorer and Filter is registered in both roles.
+func TestAddPluginsPluginImplementingBothScorerAndFilter(t *testing.T) {
 	dual := &fakeScorerFilter{typedName: fwkplugin.TypedName{Type: "dual", Name: "dual"}}
-	handle := newFakeHandle("model-a")
-	handle.AddPlugin("dual", dual)
+	p := mustFactory(t, newFakeHandle("model-a"))
+	mustAddPlugins(t, p, ms.NewWeightedScorer(dual, 1.0))
 
-	p := mustFactory(t, json.RawMessage(`{"plugins":[{"pluginRef":"dual","weight":1.0}]}`), handle)
 	prof := profile(p)
 	if len(prof.Filters()) != 1 || prof.Filters()[0].TypedName().Name != "dual" {
 		t.Errorf("expected dual in filters, got %v", prof.Filters())

@@ -26,10 +26,8 @@ import (
 
 	logutil "github.com/llm-d/llm-d-inference-payload-processor/pkg/common/observability/logging"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/datalayer"
-	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/modelselector"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/requesthandling"
-	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/modelselector/picker/maxscore"
 	ms "github.com/llm-d/llm-d-inference-payload-processor/pkg/modelselector"
 )
 
@@ -40,65 +38,20 @@ const (
 var _ requesthandling.RequestProcessor = &ModelSelectorPlugin{}
 
 // ModelSelectorPluginFactory is the factory function for the ModelSelector RequestProcessor plugin.
-func ModelSelectorPluginFactory(name string, parameters json.RawMessage, handle plugin.Handle) (plugin.Plugin, error) {
-	cfg, err := parseConfig(parameters)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse model-selector config: %w", err)
-	}
-	profile, err := buildModelSelectorProfile(handle, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build model selector profile: %w", err)
-	}
-	return NewModelSelectorPlugin(profile, handle.Datastore()).WithName(name), nil
+// It creates a plugin with an empty profile; plugins are wired in by the configuration loader.
+func ModelSelectorPluginFactory(name string, _ json.RawMessage, handle plugin.Handle) (plugin.Plugin, error) {
+	return NewModelSelectorPlugin(ms.NewModelSelectorProfile(), handle.Datastore()).WithName(name), nil
 }
 
 // NewModelSelectorPlugin creates a ModelSelector RequestProcessor plugin.
 // Candidate models are read from the Datastore on each request.
-// Filter, Scorer, and Picker plugins are sourced from profile; if no Picker is present,
-// MaxScorePicker is used as the default.
+// Plugins are added to the profile via AddPlugins after construction.
 func NewModelSelectorPlugin(profile *ms.ModelSelectorProfile, datastore datalayer.Datastore) *ModelSelectorPlugin {
 	return &ModelSelectorPlugin{
 		typedName: plugin.TypedName{Type: ModelSelectorPluginType, Name: ModelSelectorPluginType},
 		selector:  ms.NewModelSelector(profile),
 		datastore: datastore,
 	}
-}
-
-// buildModelSelectorProfile builds a ModelSelectorProfile from the given config.
-// Each pluginRef is resolved via the handle. Scorers must specify a weight.
-// If no Picker is configured, MaxScorePicker is used as the default.
-func buildModelSelectorProfile(handle plugin.Handle, cfg *ModelSelectorPluginConfig) (*ms.ModelSelectorProfile, error) {
-	profile := ms.NewModelSelectorProfile()
-
-	var hasPicker bool
-	var pluginsToAdd []plugin.Plugin
-	for _, ref := range cfg.Plugins {
-		plug := handle.Plugin(ref.PluginRef)
-		if plug == nil {
-			return nil, fmt.Errorf("plugin %q not found in handle", ref.PluginRef)
-		}
-		if s, ok := plug.(modelselector.Scorer); ok {
-			if ref.Weight == nil {
-				return nil, fmt.Errorf("scorer %q requires a weight", ref.PluginRef)
-			}
-			pluginsToAdd = append(pluginsToAdd, ms.NewWeightedScorer(s, *ref.Weight))
-		} else {
-			pluginsToAdd = append(pluginsToAdd, plug)
-		}
-		if _, ok := plug.(modelselector.Picker); ok {
-			hasPicker = true
-		}
-	}
-
-	if err := profile.AddPlugins(pluginsToAdd...); err != nil {
-		return nil, err
-	}
-
-	if !hasPicker {
-		profile.WithPicker(maxscore.NewMaxScorePicker())
-	}
-
-	return profile, nil
 }
 
 // ModelSelectorPlugin is a RequestProcessor that runs the ModelSelector
@@ -141,6 +94,16 @@ func (p *ModelSelectorPlugin) ProcessRequest(ctx context.Context, cycleState *pl
 	request.SetBodyField("model", selectedName)
 
 	return nil
+}
+
+// Profile returns the ModelSelectorProfile used by this plugin.
+func (p *ModelSelectorPlugin) Profile() *ms.ModelSelectorProfile {
+	return p.selector.Profile()
+}
+
+// AddPlugins adds the given plugins to the model selector profile.
+func (p *ModelSelectorPlugin) AddPlugins(plugins ...plugin.Plugin) error {
+	return p.selector.Profile().AddPlugins(plugins...)
 }
 
 // loadCandidateModels reads all known models from the Datastore.
