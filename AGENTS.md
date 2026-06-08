@@ -8,7 +8,7 @@ BEFORE you start:
 
 Always use the following when making code or configuration changes:
 1. make fmt for formatting
-2. make ling for linting 
+2. make lint for linting 
 3. make test for running all the unit tests
 
 ## Skills
