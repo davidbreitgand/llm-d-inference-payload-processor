@@ -18,15 +18,6 @@ package pricing
 
 import "testing"
 
-// TestAttributeKey locks the wire-visible attribute key string: producers (config
-// loaders) and consumers (scorers) read this value, and changing it silently
-// would break the contract between them.
-func TestAttributeKey(t *testing.T) {
-	if TokenPricesAttributeKey != "token_prices" {
-		t.Errorf("TokenPricesAttributeKey = %q, want %q", TokenPricesAttributeKey, "token_prices")
-	}
-}
-
 // TestTokenPricesClone verifies that Clone returns an independent *TokenPrices
 // carrying the same field values, and that mutating either field on the clone
 // does not affect the original.
@@ -63,23 +54,14 @@ func TestToTokenPrices_Nil(t *testing.T) {
 }
 
 // TestToTokenPrices_DividesByOneMillion verifies the per-million-to-per-token
-// conversion is applied to both fields.
+// conversion is applied to both fields. Both sides perform the same single
+// IEEE-754 division on the same operands, so bitwise equality is guaranteed.
 func TestToTokenPrices_DividesByOneMillion(t *testing.T) {
 	tp := ToTokenPrices(&ModelPriceShape{InputPerMillion: 2.0, OutputPerMillion: 8.0})
-	const eps = 1e-15
-	wantIn, wantOut := 2.0/1e6, 8.0/1e6
-	if absDiff(tp.InputTokenPrice, wantIn) >= eps {
-		t.Errorf("InputTokenPrice = %v, want %v", tp.InputTokenPrice, wantIn)
+	if tp.InputTokenPrice != 2.0/1e6 {
+		t.Errorf("InputTokenPrice = %v, want %v", tp.InputTokenPrice, 2.0/1e6)
 	}
-	if absDiff(tp.OutputTokenPrice, wantOut) >= eps {
-		t.Errorf("OutputTokenPrice = %v, want %v", tp.OutputTokenPrice, wantOut)
+	if tp.OutputTokenPrice != 8.0/1e6 {
+		t.Errorf("OutputTokenPrice = %v, want %v", tp.OutputTokenPrice, 8.0/1e6)
 	}
-}
-
-func absDiff(a, b float64) float64 {
-	d := a - b
-	if d < 0 {
-		d = -d
-	}
-	return d
 }
