@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -131,31 +132,48 @@ func (f *ModelNameFilter) Filter(ctx context.Context, _ *plugin.CycleState, requ
 	return filtered
 }
 
-// requestBodyModelName extracts the model name from a request-body
-// model field, which may be a single string or an array of non-empty strings.
-// An absent field (nil), an empty string, or an empty array yield an empty set,
-// meaning the request does not constrain the candidates. Any other shape —
-// including non-string or empty-string array elements — is malformed and
-// reported by the second return value being false.
+// requestBodyModelName extracts the model name from a request-body model
+// field, which must be a string: either a single model name, or — when
+// starting with '[' — a JSON-encoded array of model names ("choose from the
+// list"). An absent field (nil), an empty string, or an encoded empty array
+// yield an empty set, meaning the request does not constrain the candidates.
+// Any other shape — a non-string field, or a '['-prefixed string that does
+// not parse as a JSON array of non-empty strings — is malformed and reported
+// by the second return value being false.
 func requestBodyModelName(raw any) (sets.Set[string], bool) {
 	names := sets.New[string]()
 
 	switch value := raw.(type) {
 	case nil:
 	case string:
+		if strings.HasPrefix(strings.TrimSpace(value), "[") {
+			return encodedModelNames(value)
+		}
 		if value != "" {
 			names.Insert(value)
 		}
-	case []any:
-		for _, elem := range value {
-			name, isString := elem.(string)
-			if !isString || name == "" {
-				return nil, false
-			}
-			names.Insert(name)
-		}
 	default:
 		return nil, false
+	}
+
+	return names, true
+}
+
+// encodedModelNames parses a JSON-encoded array of non-empty model names out
+// of a string value. A parse failure or an empty-string element is malformed,
+// reported by the second return value being false.
+func encodedModelNames(value string) (sets.Set[string], bool) {
+	var parsed []string
+	if err := json.Unmarshal([]byte(value), &parsed); err != nil {
+		return nil, false
+	}
+
+	names := sets.New[string]()
+	for _, name := range parsed {
+		if name == "" {
+			return nil, false
+		}
+		names.Insert(name)
 	}
 
 	return names, true
