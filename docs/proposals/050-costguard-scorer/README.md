@@ -1,6 +1,6 @@
 # CostGuard: a smart actual inference cost minimization scorer
 
-**Authors:** David Breitgand (IBM), TBA
+**Authors:** David Breitgand (IBM), Ronen Kat (IBM)
 
 **ProposalStatus:** proposed
 
@@ -8,15 +8,15 @@
 
 ## Executive summary
 
-This document describes design for a pluggable actual inference cost-aware model scorer for the the `ModelSelector` [architecture](https://github.com/ms-llmd/llm-d-inference-payload-processor/tree/main/docs/proposals/043-model-selection-framework) of Inference Payload Processor (IPP).
+This document describes the design for a pluggable actual inference cost-aware model scorer for the `ModelSelector` [architecture](https://github.com/ms-llmd/llm-d-inference-payload-processor/tree/main/docs/proposals/043-model-selection-framework) of Inference Payload Processor (IPP).
 
 ## General: awareness to the actual cost of inference is critical
 
-The cost of inference has become a critical bottleneck in generative AI and especially for reasoning models and agentic AI. Unlike traditional software that scales with predictable, flat infrastructure costs, the new wave of generative AI incurs highly variable and unpredictable expenses because every prompt produces different number of output tokens when sent to a different model, and the number of output tokens is unpredictable.
+The cost of inference has become a critical bottleneck in generative AI and especially for reasoning models and agentic AI. Unlike traditional software that scales with predictable, flat infrastructure costs, the new wave of generative AI incurs highly variable and unpredictable expenses because every prompt produces a different number of output tokens when sent to a different model, and the number of output tokens is unpredictable.
 
-Indeed, as shown in the [recent study](https://arxiv.org/abs/2603.23971), when reasoning models of comparable capabilities are prompted with the same prompt, this results in highly unpredictable costs. Furthermore, the study shows that even the same prompt repeated to the inference SaaS providers, might result in wildy different numbers of output tokens.
+Indeed, as shown in the [recent study](https://arxiv.org/abs/2603.23971), when reasoning models of comparable capabilities are prompted with the same prompt, this results in highly unpredictable costs. Furthermore, the study shows that even the same prompt repeated to the same inference SaaS vendor at different times, might result in wildly different numbers of output tokens.
 
-This financial unpredictability is additionally exacerbated by the rise of agentic AI. An agentic harness can execute variable number of internal loops and multi-model reasoning steps for the exact same initial prompt, turning what used to be a stable software expense into a run away one.
+This financial unpredictability is additionally exacerbated by the rise of agentic AI. An agentic harness can execute a variable number of internal loops and multi-model reasoning steps for the exact same initial prompt, turning what used to be a stable software expense into a runaway one.
 
 ## Problem
 
@@ -28,11 +28,11 @@ The core flaw in this strategy is that a model with a lower input token price ma
 
 ## CostGuard approach summary
 
-In an alignment with the `ModelSelector` [architecture](https://github.com/ms-llmd/llm-d-inference-payload-processor/tree/main/docs/proposals/043-model-selection-framework), **CostGuard** assigns each model candidate a real value score in [0,1] with the higher the better semantics meaning that the model that received the highest score is most cost-efficient.
+In alignment with the `ModelSelector` [architecture](https://github.com/ms-llmd/llm-d-inference-payload-processor/tree/main/docs/proposals/043-model-selection-framework), **CostGuard** assigns each model candidate a real value score in [0,1] with higher-is-better semantics meaning that the model that received the highest score is most cost-efficient.
 
 Per incoming inference request, the **CostGuard** scorer ranks models in the candidate set of models such that (a) expected total cost of inference over all inference requests in a time window is minimized and (b) the tail cost of inference is minimized. This way, **CostGuard** aims at keeping the total inference cost down over multiple requests while simultaneously striving to minimize impact of an outlier cost on any given request.
 
-Algorithmically **CostGuard** is a variation on a well-known [Multi-Armed Bandit problem](https://en.wikipedia.org/wiki/Multi-armed_bandit#The_multi-armed_bandit_model), employing $\epsilon$-Greedy exploration-exploitation strategy, in which most of the time, the scorer ranks highest (i.e., exploits) a model with minimal known actual cost ties broken arbitrarily, but with small probability $\epsilon$, **CostGuard** explores other models randomly.
+Algorithmically **CostGuard** is a variation on a well-known [Multi-Armed Bandit problem](https://en.wikipedia.org/wiki/Multi-armed_bandit#The_multi-armed_bandit_model), employing $\epsilon$-Greedy exploration-exploitation strategy, in which most of the time, the scorer ranks highest (i.e., exploits) a model with minimal known actual cost ties broken arbitrarily, but with a small probability $\epsilon$, **CostGuard** explores other models randomly.
 
 ## Goals
 
@@ -40,8 +40,8 @@ Algorithmically **CostGuard** is a variation on a well-known [Multi-Armed Bandit
 - **Control both halves of the cost distribution simultaneously**: the body
   (typical draw) and the tail (rare expensive draw) without forcing the
   user to pick a hard cost threshold, which is unknown;
-- **Assign score in [0,1]** so that for the models set having a large spread of actual $ costs, the score discrimination in [0,1] would be preserved, and for the model set with close $ costs, the scores will be spread further apart to provide discriminative power for the score. Avoid extreme scoring to exclude models too early if other scorers are deployed;
-- **Variable  set of models** should be handled seamlessly.
+- **Assign score in [0,1]** so that for the model set having a large spread of actual $ costs, the score discrimination in [0,1] would be preserved, and for the model set with close $ costs, the scores will be spread further apart to provide discriminative power for the score. Avoid extreme scoring to exclude models too early if other scorers are deployed;
+- **Variable set of models** should be handled seamlessly.
 
 ## Design Principles
 
@@ -57,14 +57,14 @@ Algorithmically **CostGuard** is a variation on a well-known [Multi-Armed Bandit
 - **Sensitive to outliers**: use a self adjusting tdigest rather than a fixed bin structure histogram
 - **Fast Decisions**
 - **Not tightly coupled to a single method of scoring**
-- **Do not assume a classifier** of an inference request (intent, domain, complexity, etc.)  
+- **Do not assume a classifier** of an inference request (intent, domain, complexity, etc.)
 
-## 2. Non-goals
+## Non-goals
 
 - **Optimal regret bounds (i.e., a regret for exploring a specific model)** CostGuard uses fixed-schedule $\epsilon$-Greedy exploration for simplicity, computational efficiency, and robustness to drift.
 - **Adapting to non-stationary cost distributions.** In the initial version, tdigest grows unboundedly and old samples are weighted equally with new ones. A better management of tdigest is deferred to the future work.
-- **Hard cost / budget guarantees.** CostGuard assigns a score to the model with minimal body+tail cost based on the previous observations stored in the tdigest in the compressed memory efficient form. CostGuard does not enforce per-request or per-batch budget caps and does not necessarily minimize a single request cost. It works on the total cost minimization. CostGuard does not minimizes the risk for a single request.
-- **Accuracy maximization.** the objective is cost. If the models in the candidate set are comatible in terms of accuracy (this is the assumption), then the scorer will not be less accurate than the least accurate model in the set and can actually be more accurate than the most cost efficient model in the set thanks to the $\epsilon$-Greedy exploration.
+- **Hard cost / budget guarantees.** CostGuard assigns a score to the model with minimal body+tail cost based on the previous observations stored in the tdigest in the compressed memory-efficient form. CostGuard does not enforce per-request or per-batch budget caps and does not necessarily minimize a single request cost. It works on the total cost minimization. CostGuard does not minimize the risk for a single request.
+- **Accuracy maximization.** The objective is cost. If the models in the candidate set are compatible in terms of accuracy (this is the assumption), then the scorer will not be less accurate than the least accurate model in the set and can actually be more accurate than the most cost-efficient model in the set thanks to the $\epsilon$-Greedy exploration.
 - **Cross-arm sample sharing.** Each arm (i.e., model) maintains its own tdigest. Samples observed for arm `i` never inform arm `j`'s estimates.
 
 ## Design
@@ -84,11 +84,11 @@ Per time window (i.e., epoch)
   
 **Per epoch:**
 
-**Warmup:** for the incoming request, assign the highest score (i.e., 1) to a random model and score other models neutrally (0.5). Note that this is a heuristic warmup, because it is not guaranteed  that the model scored 1 will answer the request. Whichever model answers, on the response path, tdigest, tdigest of this model is updated.
+**Warmup:** for the incoming request, assign the highest score (i.e., 1) to a random model and score other models neutrally (0.5). Note that this is a heuristic warmup, because it is not guaranteed that the model scored 1 will answer the request. Whichever model answers, on the response path, the tdigest of this model is updated.
   
-**Exploration:** if there is an under-explored model (i.e., a model that didn't receive minimal warmup requests yet), score 1 the least explored model, ties broken arbitrarily, otherwise with probability $\epsilon$ score a random model 1 and score all the rest 0.5. On the response path  update the model cost tdigest from `usage` , increment the warmup counter for this model by one, update the rank for this model. Again, it is not guaranteed that the model that answers is the model that was scored 1. 
+**Exploration:** if there is an under-explored model (i.e., a model that didn't receive minimal warmup requests yet), score 1 the least explored model, ties broken arbitrarily, otherwise with probability $\epsilon$ score a random model 1 and score all the rest 0.5. On the response path, update the model cost tdigest from `usage`, increment the warmup counter for this model by one, update the rank for this model. Again, it is not guaranteed that the model that answers is the model that was scored 1.
 
-Note: the exploration and warmup phases can be controlled by dynamicaly changing $\epsilon$: set $\epsilon=1$ to trigger warmup; set $\epsilon$ to the value specified in the scorer's configuration or to the default value, if no configuration for $\epsilon$ is specified.
+Note: the exploration and warmup phases can be controlled by dynamically changing $\epsilon$: set $\epsilon=1$ to trigger warmup; set $\epsilon$ to the value specified in the scorer's configuration or to the default value, if no configuration for $\epsilon$ is specified.
 
 **Exploitation:** using only the models that were actually explored, score models using sigmoid scoring function.
 
@@ -102,11 +102,11 @@ The first term is the body cost and the second term is the tail cost. $\lambda$ 
 
 $$TrimmedMean(0, \alpha) = E[X | X \leq q_{\alpha}]$$
 
-TrimmedMean is the mean of the bottom $\alpha$ fraction of the distribution (we want to sepate between the body and the tail).
+TrimmedMean is the mean of the bottom $\alpha$ fraction of the distribution (we want to separate between the body and the tail).
 
 $CTE(\alpha) = E[X | X > q_{\alpha}]$
 
-CTE is **expected** value of a draw from the tail, not just the threshold.
+CTE is the **expected** value of a draw from the tail, not just the threshold.
 
 ### Score function
 
@@ -117,7 +117,7 @@ $$score(m) = \frac{1}{1+\exp(\beta \cdot (rank_{m} - M)) }$$
 - $\sigma$ is STD
 - M is median
 
-The larger is $\beta$, the sharper is the sigmoid, the sharper are the differences in (0, 1) score pushing closer cost rank values (expressed in $ cost)  apart in the score range. Thus, sigmoid will autocalibrate itself for any model set based on STD $\sigma$. For the model with the median rank $ cost value, the score will be neutral 0.5.
+The larger $\beta$ is, the sharper the sigmoid is. This widens the differences in (0, 1) score for close rank values (expressed in USD cost) apart in the score range. The smaller $\beta$ is, the more flattened sigmoid is. This will not push too far apart the scores in (0, 1) for the ranks (in USD), which are not close. Thus, sigmoid will autocalibrate itself for any model set based on STD $\sigma$. For the model with the median rank (USD cost value), the score will be neutral 0.5.
 
 #### Example (large STD)
 
@@ -125,7 +125,7 @@ Models m1, m2, m3. Rank(m1) = 100, rank(m2)=110, rank(m3)=130. Median (M) = 110.
 
 - score(m1) = 0.690
 - score(m2) = 0.5
-- score( m3) = 0.168
+- score(m3) = 0.168
 
 #### Example (small STD)
 
@@ -135,12 +135,12 @@ Rank(m1)=49.9, rank(m2) = 50.0, rank(m3)=50.1. STD = 0.08165. $\beta = \frac{1}{
 - score(m2) = 0.5
 - score(m3) = 0.228
 
-Note: the score assigned by the temperatured sigmoid is not in [0, 1], but in (0,1). $\beta$ automatically controls how close the score will approach 0 or 1. The score of the very large ranks asymptotically approach 0 and the scores of very low ranks asymptotically approach 1. In the warmup/exploration steps, the score of a model under warmup/exploration is set to 1 while the scores of all other models is set to 0. Thus, overall, the score function outputs model scores in [0, 1] as expected.
+Note: the score assigned by the temperatured sigmoid is not in [0, 1], but in (0,1). $\beta$ automatically controls how close the score will approach 0 or 1. The scores of the very large ranks asymptotically approach 0 and the scores of very low ranks asymptotically approach 1. In the warmup/exploration steps, the score of a model under warmup/exploration is set to 1 while the scores of all other models are set to 0. Thus, overall, the score function outputs model scores in [0, 1] as expected.
 
 ## Architecture
 
  1. Model information is populated using the `modelconfigcollector` plugin
- 2. tdigest per model and warmup counters per `WindowDuration`are maintained per model in `AttributeMap` in the `datastore`
+ 2. tdigest per model and warmup counters per `WindowDuration` are maintained per model in `AttributeMap` in the `datastore`
  3. The input and output token counters are extracted by a specialized `requestcostdata` extractor plugin and convert these two counters into a single `cost` counter
  4. The extracted `cost` sample is used by `requestmetadata` to update the tdigest of the model that responded
  5. The CostGuard scorer computes ranks and scores per model directly from tdigest on the fly.
@@ -155,11 +155,11 @@ Implement CostGuard via a series of small PRs
  3. Extend `AttributeMap` in the `datastore` to maintain tdigest and warmup counters;
  4. Implement CostGuard;
  5. Wire `CostGuard` with the rest of the system.
- 6. Connect `CostGuard` to the proposed `OpenCost` [AI Inference API](https://github.com/opencost/opencost/pull/3829) to retrieve pricing attributes of the models. Allocation based cost will be used as a proxy for variable per input and output token prices in a self-hosted cluster.
+ 6. Connect `CostGuard` to the proposed `OpenCost` [AI Inference API](https://github.com/opencost/opencost/pull/3829) to retrieve pricing attributes of the models. Allocation-based cost will be used as a proxy for variable per input and output token prices in a self-hosted cluster.
 
 ### Alternatives considered
 
-1. Extend existing `requestmetadata` scope to deal with the cost information vs specialized exractor
+1. Extend existing `requestmetadata` scope to deal with the cost information vs specialized extractor
 
 - Pros: less plugins, simpler configuration in short term
 - Cons: `requestmetadata` scope becomes poorly defined, harder to maintain in longer term
@@ -168,7 +168,7 @@ Implement CostGuard via a series of small PRs
 
 - Dynamic model set should be supported in the future, but for the first step, a static model set is assumed
 
-1. Dynamic autoadjusting exploration rate vs static configurable
+1. Dynamic autoadjusting exploration rate vs a static configurable
 
 - Pros: cleaner implementation and simpler behavior from the user PoV
 - Cons: none spotted
